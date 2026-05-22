@@ -36,7 +36,7 @@ def analisar_relato(pistas: list, localizacao: str, relato_adicional: str) -> st
     """
     
     response = client.models.generate_content(
-        model="gemini-2.5-flash",  # modelo estável e rápido
+        model="gemini-2.5-flash",  
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,

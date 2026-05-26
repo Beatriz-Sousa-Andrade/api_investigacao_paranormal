@@ -1,28 +1,49 @@
 import os
 import json
+import random  # Importado para embaralhar as chaves e distribuir o consumo
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from google import genai
 from google.genai import types
+from google.genai import errors  # Importado para capturar falhas específicas da API (como limite de requisição)
 from dotenv import load_dotenv
 
 from config import ENTIDADE_SCHEMA, SYSTEM_INSTRUCTION
 
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY)
 
 app = Flask(__name__)
 CORS(app)
 
 
+def obter_chaves_api() -> list:
+    """
+    Carrega as chaves disponíveis a partir do ambiente.
+    Dá preferência para a lista GEMINI_API_KEYS (separada por vírgulas),
+    mas aceita GEMINI_API_KEY caso apenas uma esteja configurada.
+    """
+    api_keys_str = os.getenv("GEMINI_API_KEYS", "")
+    if api_keys_str:
+        # Divide as chaves por vírgula e remove espaços vazios ao redor de cada uma
+        return [k.strip() for k in api_keys_str.split(",") if k.strip()]
+    
+    single_key = os.getenv("GEMINI_API_KEY")
+    return [single_key] if single_key else []
+
+
 def analisar_relato(pistas: list, localizacao: str, relato_adicional: str) -> str:
     """
-    Agrupa os dados do formulário e envia o cenário completo para o Gemini.
-    Retorna a análise estruturada em JSON.
+    Agrupa os dados do formulário e tenta processar com as chaves disponíveis.
+    Caso a chave atual falhe (por limite de cota ou rede), o sistema tenta a próxima.
     """
-    # Une as pistas numa única string explicativa para o modelo
+    chaves_disponiveis = obter_chaves_api()
+    if not chaves_disponiveis:
+        raise ValueError("Nenhuma chave de API do Gemini foi configurada no servidor.")
+    
+    # Embaralha as chaves em cada requisição para não gastar sempre a primeira chave
+    random.shuffle(chaves_disponiveis)
+    
     lista_pistas = ", ".join(pistas)
     
     prompt = f"""
@@ -35,17 +56,42 @@ def analisar_relato(pistas: list, localizacao: str, relato_adicional: str) -> st
     Retorne APENAS o JSON conforme o esquema definido, sem blocos de código markdown adicionais.
     """
     
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",  
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            response_mime_type="application/json",
-            response_schema=ENTIDADE_SCHEMA,
-            temperature=0.7
-        )
-    )
-    return response.text
+    erros_acumulados = []
+    
+    # Tenta realizar a requisição para cada chave de API disponível
+    for index, key in enumerate(chaves_disponiveis):
+        try:
+            # Cria um cliente temporário para a chave atual da tentativa
+            client = genai.Client(api_key=key)
+            
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",  
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    response_mime_type="application/json",
+                    response_schema=ENTIDADE_SCHEMA,
+                    temperature=0.7
+                )
+            )
+            # Retorna o texto da resposta se bem-sucedido, encerrando o loop
+            return response.text
+            
+        except errors.APIError as api_err:
+            # Captura erros específicos do Gemini (Ex: limites de requisição 429)
+            erro_msg = f"Chave {index+1} falhou (APIError {api_err.code}): {api_err.message}"
+            print(f"[Aviso de Sistema - Ordo Realitas] {erro_msg}")
+            erros_acumulados.append(erro_msg)
+            
+        except Exception as e:
+            # Captura outros tipos de exceções (ex: problemas temporários de conexão)
+            erro_msg = f"Chave {index+1} falhou por erro genérico: {str(e)}"
+            print(f"[Aviso de Sistema - Ordo Realitas] {erro_msg}")
+            erros_acumulados.append(erro_msg)
+            
+    # Caso todas as chaves tenham falhado, lança um erro com o histórico de problemas
+    mensagem_consolidade = " | ".join(erros_acumulados)
+    raise RuntimeError(f"Todas as chaves de API falharam ao processar o relato: {mensagem_consolidade}")
 
 
 @app.route("/")
@@ -61,7 +107,6 @@ def root():
 def investigar():
     data = request.get_json()
     
-    # Validação 1: Verifica o payload estruturado enviado pelo script.js
     if not data or "pistas" not in data or "localizacao" not in data:
         return jsonify({
             "status": "error",
@@ -72,7 +117,6 @@ def investigar():
     localizacao = data.get("localizacao", "").strip()
     relato_adicional = data.get("relato_adicional", "").strip()
     
-    # Validação 2: Mínimo de pistas idêntico ao validador do frontend
     if not isinstance(pistas, list) or len(pistas) < 2:
         return jsonify({
             "status": "error",
@@ -86,18 +130,16 @@ def investigar():
         }), 400
     
     try:
-        # Chama o Gemini passando a estrutura de dados tática
+        # Chama a função que agora possui o fallback e rotação de chaves
         analise_json_string = analisar_relato(pistas, localizacao, relato_adicional)
         analise_estruturada = json.loads(analise_json_string)
         
-        # Verifica se a IA rejeitou o caso (Regra de segurança do config.py)
         if analise_estruturada.get("nome_da_entidade") == "ERRO_CASO_REJEITADO_PELO_VERISSIMO":
             return jsonify({
                 "status": "error",
                 "message": "⚠️ ERRO_CASO_REJEITADO: O Veríssimo arquivou este caso. A descrição não corresponde a uma ameaça paranormal legítima."
             }), 400
         
-        # SUCESSO: Retorna o objeto com a chave exata que o script.js espera ('dados_entidade')
         return jsonify({
             "status": "success",
             "pistas_enviadas": pistas,

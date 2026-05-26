@@ -19,17 +19,25 @@ CORS(app)
 
 def obter_chaves_api() -> list:
     """
-    Carrega as chaves disponíveis a partir do ambiente.
-    Dá preferência para a lista GEMINI_API_KEYS (separada por vírgulas),
-    mas aceita GEMINI_API_KEY caso apenas uma esteja configurada.
+    Carrega e limpa as chaves, tratando automaticamente caso o usuário
+    tenha configurado múltiplas chaves no singular (GEMINI_API_KEY) ou plural.
     """
-    api_keys_str = os.getenv("GEMINI_API_KEYS", "")
-    if api_keys_str:
-        # Divide as chaves por vírgula e remove espaços vazios ao redor de cada uma
-        return [k.strip() for k in api_keys_str.split(",") if k.strip()]
+    # Tenta obter de qualquer uma das duas variáveis
+    api_keys_str = os.getenv("GEMINI_API_KEYS")  
     
-    single_key = os.getenv("GEMINI_API_KEY")
-    return [single_key] if single_key else []
+    if api_keys_str:
+        # Se houver vírgula, divide a string em várias chaves
+        if "," in api_keys_str:
+            return [
+                k.strip().replace('"', '').replace("'", "") 
+                for k in api_keys_str.split(",") 
+                if k.strip()
+            ]
+        else:
+            # Se não houver vírgula, limpa e retorna como chave única
+            return [api_keys_str.strip().replace('"', '').replace("'", "")]
+            
+    return []
 
 
 def analisar_relato(pistas: list, localizacao: str, relato_adicional: str) -> str:

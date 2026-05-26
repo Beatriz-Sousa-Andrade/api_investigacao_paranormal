@@ -73,7 +73,7 @@ def analisar_relato(pistas: list, localizacao: str, relato_adicional: str) -> st
             client = genai.Client(api_key=key)
             
             response = client.models.generate_content(
-                model="gemini-2.5-flash",  
+                model="gemini-3.5-flash",  
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
